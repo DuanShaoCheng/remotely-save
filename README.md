@@ -2,11 +2,34 @@
 
 English | [中文](./README.zh-cn.md)
 
+> This repository is a fork of [remotely-save/remotely-save](https://github.com/remotely-save/remotely-save). The original upstream README is kept below; fork-specific installation notes and fixes are documented here.
+
 This is yet another unofficial sync plugin for Obsidian. If you like it or find it useful, please consider give it a [star ![GitHub Repo stars](https://img.shields.io/github/stars/fyears/remotely-save?style=social)](https://github.com/fyears/remotely-save) on Github.
 
 [![BuildCI](https://github.com/fyears/remotely-save/actions/workflows/auto-build.yml/badge.svg)](https://github.com/fyears/remotely-save/actions/workflows/auto-build.yml)
 
 [![downloads of latest version](https://img.shields.io/github/downloads-pre/remotely-save/remotely-save/latest/main.js?sort=semver)](https://github.com/fyears/remotely-save/releases)
+
+## Fork Release
+
+Latest fork release: [v0.5.25-fix.5](https://github.com/DuanShaoCheng/remotely-save/releases/tag/v0.5.25-fix.5)
+
+Manual installation from this fork:
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest fork release.
+2. Put the three files into your vault plugin directory, usually `.obsidian/plugins/remotely-save/`.
+3. Restart Obsidian, then enable or reload the Remotely Save plugin.
+
+This fork currently keeps the upstream plugin id (`remotely-save`) and version (`0.5.25`) so existing Obsidian settings remain compatible. The fork release tag is used to distinguish patched builds.
+
+Fork-specific fixes include:
+
+- OAuth build defaults are restored so OneDrive and other OAuth providers can still authorize when local build environment variables are absent.
+- Sync-on-save now listens to `modify`, `create`, `delete`, and `rename` vault events, so newly created or renamed notes can trigger sync.
+- Sync-on-save cooldown no longer drops file changes; it schedules a retry after the cooldown window.
+- Filename validation is strict on Windows and warning-only elsewhere, preserving cross-platform use while surfacing names that may fail on Windows or OneDrive.
+- Retry, sync guard, encrypted-file mtime, and credential-safety improvements from the earlier fork stability patch are retained.
+- Tests cover the OAuth default fallback and sync-on-save helper behavior.
 
 ## Disclaimer
 
@@ -220,29 +243,34 @@ Download history can be viewed on the unofficial [Obsidian Stats](https://www.mo
 
 [![Star History Chart](https://api.star-history.com/svg?repos=remotely-save/remotely-save&type=Date)](https://star-history.com/#remotely-save/remotely-save&Date)
 
-## Fork Fixes (v0.5.25-fix.3)
+## Fork Fixes (v0.5.25-fix.5)
 
-This fork includes the following stability improvements on top of the original v0.5.25:
+This fork includes the following fixes and stability improvements on top of the original v0.5.25:
 
-1. **Retry with backoff** — HTTP 429/500/502/503/504 errors in WebDAV, S3, and OneDrive backends are now automatically retried with exponential backoff and jitter.
-2. **Minimum sync interval** — A 30-second minimum interval prevents rapid re-sync loops triggered by sync-on-save.
-3. **Filename validation** — Cross-platform filename validation is re-enabled in warn mode; Windows-strict errors still block sync.
-4. **Encryption re-upload fix** — `fullfillMTimeOfRemoteEntityInplace` now correctly propagates mtime after upload, preventing unnecessary re-uploads of encrypted files.
-5. **Sync-on-save scope** — File change events are accumulated and filtered to skip config directory changes when not syncing config.
-6. **ArrayBuffer compatibility** — `bufferToArrayBuffer` creates a fresh ArrayBuffer to avoid SharedArrayBuffer type issues.
-7. **Credential leak protection** — `plugins/remotely-save/data.json` is always skipped during sync to prevent leaking credentials.
+1. **OAuth build defaults** - Public OAuth client defaults are included at build time when environment variables are missing.
+2. **Retry with backoff** - HTTP 429/500/502/503/504 errors in WebDAV, S3, and OneDrive backends are retried with exponential backoff and jitter.
+3. **Sync-on-save event coverage** - `modify`, `create`, `delete`, and `rename` vault events are accumulated before triggering sync-on-save.
+4. **Sync-on-save cooldown retry** - File changes detected during the 30-second cooldown are retried after the cooldown instead of being dropped.
+5. **Filename validation** - Windows uses strict filename validation; other platforms warn about Windows-incompatible names without blocking sync.
+6. **Encryption re-upload fix** - `fullfillMTimeOfRemoteEntityInplace` propagates mtime after upload, reducing unnecessary re-uploads of encrypted files.
+7. **Sync-on-save scope** - Config directory changes are skipped when config/bookmark sync is disabled.
+8. **ArrayBuffer compatibility** - `bufferToArrayBuffer` creates a fresh ArrayBuffer to avoid SharedArrayBuffer type issues.
+9. **Credential leak protection** - `plugins/remotely-save/data.json` is always skipped during sync to avoid leaking credentials.
 
-git clone https://github.com/remotely-save/remotely-save.git
-cd remotely-save
-git apply fixes.patch   # apply fork's source changes
-npm install
-npm run build           # use webpack, NOT esbuild
-```
+### Install This Fork
 
+Download the release assets from [v0.5.25-fix.5](https://github.com/DuanShaoCheng/remotely-save/releases/tag/v0.5.25-fix.5):
+
+- `main.js`
+- `manifest.json`
+- `styles.css`
+
+Copy all three files into `.obsidian/plugins/remotely-save/` in the vault where you want to use the patched build.
 
 ### Build
 
 ```bash
 npm install
+npm test
 npm run build
 ```
