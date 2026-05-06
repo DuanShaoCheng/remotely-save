@@ -1,0 +1,796 @@
+diff --git a/pro/src/sync.ts b/pro/src/sync.ts
+index d4bd9f6..f860c81 100644
+--- a/pro/src/sync.ts
++++ b/pro/src/sync.ts
+@@ -244,6 +244,17 @@ export const checkIsSkipItemOrNotByName = (
+     }
+   }
+ 
++  // Always skip the remotely-save plugin's own data.json to prevent credential leak
++  if (finalIsIgnored === undefined || !finalIsIgnored) {
++    if (
++      key.includes("plugins/remotely-save/data.json") ||
++      key === `${configDir}/plugins/remotely-save/data.json`
++    ) {
++      isExplictlyIgnored = true;
++      finalIsIgnored = true;
++    }
++  }
++
+   const checkIsHidden =
+     isHiddenPath(key, true, false) ||
+     (!syncUnderscoreItems && isHiddenPath(key, false, true)) ||
+@@ -405,14 +416,19 @@ const ensembleMixedEnties = async (
+       remoteMaySkipCountAndNotConfig += 1;
+     }
+ 
+-    // 20240907: users (not on windows) doesn't like it. revert back now.
+-    // TODO: platform specific but not introducing obsidian dependency into sync.ts
+-    // const checkValidNameResult = checkValidName(key);
+-    // if (!checkValidNameResult.result) {
+-    //   throw Error(
+-    //     `your remote folder/file name is invalid: ${checkValidNameResult.reason}`
+-    //   );
+-    // }
++    // Re-enabled with warn mode: warn on non-Windows, block on Windows
++    const checkValidNameResult = checkValidName(key, "warn");
++    if (!checkValidNameResult.result) {
++      if (checkValidNameResult.level === "error") {
++        throw Error(
++          `your remote folder/file name is invalid: ${checkValidNameResult.reason}`
++        );
++      } else {
++        console.warn(
++          `remote folder/file name may be invalid on Windows: ${key} (${checkValidNameResult.reason})`
++        );
++      }
++    }
+ 
+     finalMappings[key] = {
+       key: key,
+@@ -490,14 +506,19 @@ const ensembleMixedEnties = async (
+       skipOrNotResults[key] = skipOrNot;
+     }
+ 
+-    // 20240907: users (not on windows) doesn't like it. revert back now.
+-    // TODO: platform specific but not introducing obsidian dependency into sync.ts
+-    // const checkValidNameResult = checkValidName(key);
+-    // if (!checkValidNameResult.result) {
+-    //   throw Error(
+-    //     `your local folder/file name is invalid: ${checkValidNameResult.reason}`
+-    //   );
+-    // }
++    // Re-enabled with warn mode: warn on non-Windows, block on Windows
++    const checkValidNameResult = checkValidName(key, "warn");
++    if (!checkValidNameResult.result) {
++      if (checkValidNameResult.level === "error") {
++        throw Error(
++          `your local folder/file name is invalid: ${checkValidNameResult.reason}`
++        );
++      } else {
++        console.warn(
++          `local folder/file name may be invalid on Windows: ${key} (${checkValidNameResult.reason})`
++        );
++      }
++    }
+ 
+     // TODO: abstraction leaking?
+     const localCopied = await fsEncrypt.encryptEntity(
+@@ -1380,20 +1401,10 @@ const fullfillMTimeOfRemoteEntityInplace = (
+   remote: Entity,
+   mtimeCli?: number
+ ) => {
+-  // TODO:
+-  // on 20240405, we find that dropbox's mtimeCli is not updated
+-  // if the content is not updated even the time is updated...
+-  // so we do not check remote.mtimeCli for now..
+-  if (
+-    mtimeCli !== undefined &&
+-    mtimeCli > 0 /* &&
+-    (remote.mtimeCli === undefined ||
+-      remote.mtimeCli <= 0 ||
+-      (remote.mtimeSvr !== undefined &&
+-        remote.mtimeSvr > 0 &&
+-        remote.mtimeCli >= remote.mtimeSvr))
+-    */
+-  ) {
++  // Always set mtimeCli from the local file after upload.
++  // This prevents re-upload on next sync when the remote mtimeCli
++  // doesn't match (e.g. Dropbox not updating mtimeCli on content-unchanged uploads).
++  if (mtimeCli !== undefined && mtimeCli > 0) {
+     remote.mtimeCli = mtimeCli;
+   }
+   return remote;
+@@ -1514,9 +1525,11 @@ const dispatchOperationToActualV3 = async (
+       fsLocal,
+       fsEncrypt
+     );
+-    // TODO: abstract away the dirty hack
+     fullfillMTimeOfRemoteEntityInplace(entity, mtimeCli);
+-    // console.debug(`after fullfill, entity=${JSON.stringify(entity,null,2)}`)
++    // Ensure sizeEnc is set to prevent re-upload on next sync
++    if (entity.sizeEnc === undefined && entity.size !== undefined) {
++      entity.sizeEnc = entity.size;
++    }
+     await upsertPrevSyncRecordByVaultAndProfile(
+       db,
+       vaultRandomID,
+diff --git a/src/fsOnedrive.ts b/src/fsOnedrive.ts
+index 06c56a7..1b40c76 100644
+--- a/src/fsOnedrive.ts
++++ b/src/fsOnedrive.ts
+@@ -19,7 +19,7 @@ import {
+ } from "./baseTypes";
+ import { VALID_REQURL } from "./baseTypesObs";
+ import { FakeFs } from "./fsAll";
+-import { bufferToArrayBuffer } from "./misc";
++import { bufferToArrayBuffer, retryWithBackoff } from "./misc";
+ 
+ const SCOPES = ["User.Read", "Files.ReadWrite.AppFolder", "offline_access"];
+ const REDIRECT_URI = `obsidian://${COMMAND_CALLBACK_ONEDRIVE}`;
+@@ -619,104 +619,114 @@ export class FakeFsOnedrive extends FakeFs {
+   }
+ 
+   async _getJson(pathFragOrig: string) {
+-    const theUrl = this._buildUrl(pathFragOrig);
+-    console.debug(`getJson, theUrl=${theUrl}`);
+-    return JSON.parse(
+-      await request({
+-        url: theUrl,
+-        method: "GET",
+-        contentType: "application/json",
+-        headers: {
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-          "Cache-Control": "no-cache",
+-        },
+-      })
+-    );
++    return await retryWithBackoff(async () => {
++      const theUrl = this._buildUrl(pathFragOrig);
++      console.debug(`getJson, theUrl=${theUrl}`);
++      return JSON.parse(
++        await request({
++          url: theUrl,
++          method: "GET",
++          contentType: "application/json",
++          headers: {
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++            "Cache-Control": "no-cache",
++          },
++        })
++      );
++    }, { hint: `onedrive: get ${pathFragOrig}` });
+   }
+ 
+   async _postJson(pathFragOrig: string, payload: any) {
+-    const theUrl = this._buildUrl(pathFragOrig);
+-    console.debug(`postJson, theUrl=${theUrl}`);
+-    return JSON.parse(
+-      await request({
+-        url: theUrl,
+-        method: "POST",
+-        contentType: "application/json",
+-        body: JSON.stringify(payload),
+-        headers: {
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      })
+-    );
++    return await retryWithBackoff(async () => {
++      const theUrl = this._buildUrl(pathFragOrig);
++      console.debug(`postJson, theUrl=${theUrl}`);
++      return JSON.parse(
++        await request({
++          url: theUrl,
++          method: "POST",
++          contentType: "application/json",
++          body: JSON.stringify(payload),
++          headers: {
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        })
++      );
++    }, { hint: `onedrive: post ${pathFragOrig}` });
+   }
+ 
+   async _patchJson(pathFragOrig: string, payload: any) {
+-    const theUrl = this._buildUrl(pathFragOrig);
+-    console.debug(`patchJson, theUrl=${theUrl}`);
+-    return JSON.parse(
+-      await request({
+-        url: theUrl,
+-        method: "PATCH",
+-        contentType: "application/json",
+-        body: JSON.stringify(payload),
+-        headers: {
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      })
+-    );
++    return await retryWithBackoff(async () => {
++      const theUrl = this._buildUrl(pathFragOrig);
++      console.debug(`patchJson, theUrl=${theUrl}`);
++      return JSON.parse(
++        await request({
++          url: theUrl,
++          method: "PATCH",
++          contentType: "application/json",
++          body: JSON.stringify(payload),
++          headers: {
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        })
++      );
++    }, { hint: `onedrive: patch ${pathFragOrig}` });
+   }
+ 
+   async _deleteJson(pathFragOrig: string) {
+-    const theUrl = this._buildUrl(pathFragOrig);
+-    console.debug(`deleteJson, theUrl=${theUrl}`);
+-    if (VALID_REQURL) {
+-      await requestUrl({
+-        url: theUrl,
+-        method: "DELETE",
+-        headers: {
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      });
+-    } else {
+-      await fetch(theUrl, {
+-        method: "DELETE",
+-        headers: {
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      });
+-    }
++    await retryWithBackoff(async () => {
++      const theUrl = this._buildUrl(pathFragOrig);
++      console.debug(`deleteJson, theUrl=${theUrl}`);
++      if (VALID_REQURL) {
++        await requestUrl({
++          url: theUrl,
++          method: "DELETE",
++          headers: {
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        });
++      } else {
++        await fetch(theUrl, {
++          method: "DELETE",
++          headers: {
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        });
++      }
++    }, { hint: `onedrive: delete ${pathFragOrig}` });
+   }
+ 
+   async _putArrayBuffer(pathFragOrig: string, payload: ArrayBuffer) {
+-    const theUrl = this._buildUrl(pathFragOrig);
+-    console.debug(`putArrayBuffer, theUrl=${theUrl}`);
+-    // TODO:
+-    // 20220401: On Android, requestUrl has issue that text becomes base64.
+-    // Use fetch everywhere instead!
+-    // biome-ignore lint/correctness/noConstantCondition: hard code
+-    if (false /*VALID_REQURL*/) {
+-      const res = await requestUrl({
+-        url: theUrl,
+-        method: "PUT",
+-        body: payload,
+-        contentType: DEFAULT_CONTENT_TYPE,
+-        headers: {
+-          "Content-Type": DEFAULT_CONTENT_TYPE,
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      });
+-      return res.json as DriveItem | UploadSession;
+-    } else {
+-      const res = await fetch(theUrl, {
+-        method: "PUT",
+-        body: payload,
+-        headers: {
+-          "Content-Type": DEFAULT_CONTENT_TYPE,
+-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+-        },
+-      });
+-      return (await res.json()) as DriveItem | UploadSession;
+-    }
++    return await retryWithBackoff(async () => {
++      const theUrl = this._buildUrl(pathFragOrig);
++      console.debug(`putArrayBuffer, theUrl=${theUrl}`);
++      // TODO:
++      // 20220401: On Android, requestUrl has issue that text becomes base64.
++      // Use fetch everywhere instead!
++      // biome-ignore lint/correctness/noConstantCondition: hard code
++      if (false /*VALID_REQURL*/) {
++        const res = await requestUrl({
++          url: theUrl,
++          method: "PUT",
++          body: payload,
++          contentType: DEFAULT_CONTENT_TYPE,
++          headers: {
++            "Content-Type": DEFAULT_CONTENT_TYPE,
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        });
++        return res.json as DriveItem | UploadSession;
++      } else {
++        const res = await fetch(theUrl, {
++          method: "PUT",
++          body: payload,
++          headers: {
++            "Content-Type": DEFAULT_CONTENT_TYPE,
++            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
++          },
++        });
++        return (await res.json()) as DriveItem | UploadSession;
++      }
++    }, { hint: `onedrive: put ${pathFragOrig}` });
+   }
+ 
+   /**
+diff --git a/src/fsS3.ts b/src/fsS3.ts
+index f07aeff..4c3d9ef 100644
+--- a/src/fsS3.ts
++++ b/src/fsS3.ts
+@@ -29,7 +29,7 @@ import { Platform, type RequestUrlParam, requestUrl } from "obsidian";
+ import PQueue from "p-queue";
+ import { DEFAULT_CONTENT_TYPE, type S3Config } from "./baseTypes";
+ import { VALID_REQURL } from "./baseTypesObs";
+-import { bufferToArrayBuffer, getFolderLevels } from "./misc";
++import { bufferToArrayBuffer, getFolderLevels, retryWithBackoff } from "./misc";
+ 
+ import type { Entity } from "./baseTypes";
+ import { FakeFs } from "./fsAll";
+@@ -587,19 +587,21 @@ export class FakeFsS3 extends FakeFs {
+     ) {
+       throw Error(`_statFromRoot should only accept prefix-ed path`);
+     }
+-    const res = await this.s3Client.send(
+-      new HeadObjectCommand({
+-        Bucket: this.s3Config.s3BucketName,
+-        Key: key,
+-      })
+-    );
++    return await retryWithBackoff(async () => {
++      const res = await this.s3Client.send(
++        new HeadObjectCommand({
++          Bucket: this.s3Config.s3BucketName,
++          Key: key,
++        })
++      );
+ 
+-    return fromS3HeadObjectToEntity(
+-      key,
+-      res,
+-      this.s3Config.remotePrefix ?? "",
+-      this.s3Config.useAccurateMTime ?? false
+-    );
++      return fromS3HeadObjectToEntity(
++        key,
++        res,
++        this.s3Config.remotePrefix ?? "",
++        this.s3Config.useAccurateMTime ?? false
++      );
++    }, { hint: `s3: stat ${key}` });
+   }
+ 
+   async mkdir(key: string, mtime?: number, ctime?: number): Promise<Entity> {
+@@ -698,36 +700,38 @@ export class FakeFsS3 extends FakeFs {
+       throw Error(`_writeFileFromRoot should only accept prefix-ed path`);
+     }
+ 
+-    const bytesIn5MB = 5242880;
+-    const body = new Uint8Array(content);
+-
+-    let contentType = DEFAULT_CONTENT_TYPE;
+-    contentType =
+-      mime.contentType(mime.lookup(key) || DEFAULT_CONTENT_TYPE) ||
+-      DEFAULT_CONTENT_TYPE;
+-
+-    const upload = new Upload({
+-      client: this.s3Client,
+-      queueSize: this.s3Config.partsConcurrency, // concurrency
+-      partSize: bytesIn5MB, // minimal 5MB by default
+-      leavePartsOnError: false,
+-      params: {
+-        Bucket: this.s3Config.s3BucketName,
+-        Key: key,
+-        Body: body,
+-        ContentType: contentType,
+-        Metadata: {
+-          MTime: `${mtime / 1000.0}`,
+-          CTime: `${ctime / 1000.0}`,
++    return await retryWithBackoff(async () => {
++      const bytesIn5MB = 5242880;
++      const body = new Uint8Array(content);
++
++      let contentType = DEFAULT_CONTENT_TYPE;
++      contentType =
++        mime.contentType(mime.lookup(key) || DEFAULT_CONTENT_TYPE) ||
++        DEFAULT_CONTENT_TYPE;
++
++      const upload = new Upload({
++        client: this.s3Client,
++        queueSize: this.s3Config.partsConcurrency, // concurrency
++        partSize: bytesIn5MB, // minimal 5MB by default
++        leavePartsOnError: false,
++        params: {
++          Bucket: this.s3Config.s3BucketName,
++          Key: key,
++          Body: body,
++          ContentType: contentType,
++          Metadata: {
++            MTime: `${mtime / 1000.0}`,
++            CTime: `${ctime / 1000.0}`,
++          },
+         },
+-      },
+-    });
+-    upload.on("httpUploadProgress", (progress) => {
+-      // console.info(progress);
+-    });
+-    await upload.done();
++      });
++      upload.on("httpUploadProgress", (progress) => {
++        // console.info(progress);
++      });
++      await upload.done();
+ 
+-    return await this._statFromRoot(key);
++      return await this._statFromRoot(key);
++    }, { hint: `s3: write ${key}` });
+   }
+ 
+   async readFile(key: string): Promise<ArrayBuffer> {
+@@ -750,14 +754,16 @@ export class FakeFsS3 extends FakeFs {
+     ) {
+       throw Error(`_readFileFromRoot should only accept prefix-ed path`);
+     }
+-    const data = await this.s3Client.send(
+-      new GetObjectCommand({
+-        Bucket: this.s3Config.s3BucketName,
+-        Key: key,
+-      })
+-    );
+-    const bodyContents = await getObjectBodyToArrayBuffer(data.Body);
+-    return bodyContents;
++    return await retryWithBackoff(async () => {
++      const data = await this.s3Client.send(
++        new GetObjectCommand({
++          Bucket: this.s3Config.s3BucketName,
++          Key: key,
++        })
++      );
++      const bodyContents = await getObjectBodyToArrayBuffer(data.Body);
++      return bodyContents;
++    }, { hint: `s3: read ${key}` });
+   }
+ 
+   async rename(key1: string, key2: string): Promise<void> {
+diff --git a/src/fsWebdav.ts b/src/fsWebdav.ts
+index ef5db6a..c9d94e0 100644
+--- a/src/fsWebdav.ts
++++ b/src/fsWebdav.ts
+@@ -15,7 +15,7 @@ import type {
+ import type { Entity, WebdavConfig } from "./baseTypes";
+ import { VALID_REQURL } from "./baseTypesObs";
+ import { FakeFs } from "./fsAll";
+-import { bufferToArrayBuffer, delay, splitFileSizeToChunkRanges } from "./misc";
++import { bufferToArrayBuffer, delay, retryWithBackoff, splitFileSizeToChunkRanges } from "./misc";
+ 
+ /**
+  * https://stackoverflow.com/questions/32850898/how-to-check-if-a-string-has-any-non-iso-8859-1-characters-with-javascript
+@@ -539,10 +539,12 @@ export class FakeFsWebdav extends FakeFs {
+   }
+ 
+   async _statFromRoot(key: string): Promise<Entity> {
+-    const res = (await this.client.stat(key, {
+-      details: false,
+-    })) as FileStat;
+-    return fromWebdavItemToEntity(res, this.remoteBaseDir);
++    return await retryWithBackoff(async () => {
++      const res = (await this.client.stat(key, {
++        details: false,
++      })) as FileStat;
++      return fromWebdavItemToEntity(res, this.remoteBaseDir);
++    }, { hint: `webdav: stat ${key}` });
+   }
+ 
+   async mkdir(key: string, mtime?: number, ctime?: number): Promise<Entity> {
+@@ -674,16 +676,16 @@ export class FakeFsWebdav extends FakeFs {
+     ctime: number,
+     origKey: string
+   ): Promise<Entity> {
+-    // console.debug(`start _writeFileFromRootFull`);
+-    await this.client.putFileContents(key, content, {
+-      overwrite: true,
+-      onUploadProgress: (progress: any) => {
+-        console.info(`Uploaded ${progress.loaded} bytes of ${progress.total}`);
+-      },
+-    });
+-    const k = await this._statFromRoot(key);
+-    // console.debug(`end _writeFileFromRootFull`);
+-    return k;
++    return await retryWithBackoff(async () => {
++      await this.client.putFileContents(key, content, {
++        overwrite: true,
++        onUploadProgress: (progress: any) => {
++          console.info(`Uploaded ${progress.loaded} bytes of ${progress.total}`);
++        },
++      });
++      const k = await this._statFromRoot(key);
++      return k;
++    }, { hint: `webdav: write ${key}` });
+   }
+ 
+   /**
+@@ -890,13 +892,15 @@ export class FakeFsWebdav extends FakeFs {
+   }
+ 
+   async _readFileFromRoot(key: string): Promise<ArrayBuffer> {
+-    const buff = (await this.client.getFileContents(key)) as BufferLike;
+-    if (buff instanceof ArrayBuffer) {
+-      return buff;
+-    } else if (buff instanceof Buffer) {
+-      return bufferToArrayBuffer(buff);
+-    }
+-    throw Error(`unexpected file content result with type ${typeof buff}`);
++    return await retryWithBackoff(async () => {
++      const buff = (await this.client.getFileContents(key)) as BufferLike;
++      if (buff instanceof ArrayBuffer) {
++        return buff;
++      } else if (buff instanceof Buffer) {
++        return bufferToArrayBuffer(buff);
++      }
++      throw Error(`unexpected file content result with type ${typeof buff}`);
++    }, { hint: `webdav: read ${key}` });
+   }
+ 
+   async rename(key1: string, key2: string): Promise<void> {
+diff --git a/src/main.ts b/src/main.ts
+index c174dd8..117d9dd 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -11,6 +11,7 @@ import {
+   Platform,
+   Plugin,
+   type Setting,
++  TFile,
+   TFolder,
+   addIcon,
+   requireApiVersion,
+@@ -230,6 +231,8 @@ export default class RemotelySavePlugin extends Plugin {
+   debugServerTemp?: string;
+   syncEvent?: Events;
+   appContainerObserver?: MutationObserver;
++  lastSyncCompletedAt: number = 0;
++  recentlyChangedFiles: Set<string> = new Set();
+ 
+   async syncRun(triggerSource: SyncTriggerSourceType = "manual") {
+     let profiler: Profiler | undefined = undefined;
+@@ -510,6 +513,7 @@ export default class RemotelySavePlugin extends Plugin {
+     fsEncrypt.closeResources();
+     (profiler as Profiler | undefined)?.clear();
+ 
++    this.lastSyncCompletedAt = Date.now();
+     this.syncEvent?.trigger("SYNC_DONE");
+   }
+ 
+@@ -1786,6 +1790,15 @@ export default class RemotelySavePlugin extends Plugin {
+ 
+   async _checkCurrFileModified(caller: "SYNC" | "FILE_CHANGES") {
+     console.debug(`inside checkCurrFileModified`);
++
++    // Minimum interval between auto-syncs to prevent rapid re-sync loops
++    const MIN_SYNC_INTERVAL_MS = 30000; // 30 seconds
++    const now = Date.now();
++    if (caller === "FILE_CHANGES" && now - this.lastSyncCompletedAt < MIN_SYNC_INTERVAL_MS) {
++      console.debug(`skipping auto sync, too soon after last sync (${now - this.lastSyncCompletedAt}ms < ${MIN_SYNC_INTERVAL_MS}ms)`);
++      return;
++    }
++
+     const currentFile = this.app.workspace.getActiveFile();
+ 
+     if (currentFile) {
+@@ -1835,11 +1848,28 @@ export default class RemotelySavePlugin extends Plugin {
+     this._checkCurrFileModified("SYNC");
+   };
+ 
++  _syncOnSaveEvent2Accumulator = (file: any) => {
++    if (file instanceof TFile) {
++      // Skip config dir changes when not syncing config
++      if (
++        file.path.startsWith(this.app.vault.configDir + "/") &&
++        !this.settings.syncConfigDir &&
++        !this.settings.syncBookmarks
++      ) {
++        return;
++      }
++      this.recentlyChangedFiles.add(file.path);
++    }
++  };
++
+   _syncOnSaveEvent2 = throttle(
+     async () => {
+-      await this._checkCurrFileModified("FILE_CHANGES");
++      if (this.recentlyChangedFiles.size > 0) {
++        this.recentlyChangedFiles.clear();
++        await this._checkCurrFileModified("FILE_CHANGES");
++      }
+     },
+-    1000 * 3,
++    1000 * 5,
+     {
+       leading: false,
+       trailing: true,
+@@ -1858,9 +1888,13 @@ export default class RemotelySavePlugin extends Plugin {
+           this.syncEvent?.on("SYNC_DONE", this._syncOnSaveEvent1)!
+         );
+ 
+-        // listen to current file save changes
++        // listen to current file save changes via accumulator
++        this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2Accumulator));
++        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2Accumulator));
++        this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2Accumulator));
++        this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2Accumulator));
++        // The throttled handler checks accumulated files
+         this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2));
+-        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2));
+         this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2));
+         this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2));
+       });
+diff --git a/src/misc.ts b/src/misc.ts
+index 2d3b2ae..a095b02 100644
+--- a/src/misc.ts
++++ b/src/misc.ts
+@@ -89,8 +89,11 @@ export const mkdirpInVault = async (thePath: string, vault: Vault) => {
+  */
+ export const bufferToArrayBuffer = (
+   b: Buffer | Uint8Array | ArrayBufferView
+-) => {
+-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
++): ArrayBuffer => {
++  const ab = new ArrayBuffer(b.byteLength);
++  const view = new Uint8Array(ab);
++  view.set(new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
++  return ab;
+ };
+ 
+ /**
+@@ -533,6 +536,63 @@ export const stringToFragment = (string: string) => {
+ export const delay = (ms: number) =>
+   new Promise((resolve) => setTimeout(resolve, ms));
+ 
++export interface RetryOptions {
++  maxRetries?: number;
++  baseDelay?: number;
++  maxDelay?: number;
++  retryableStatusCodes?: number[];
++  hint?: string;
++}
++
++const DEFAULT_RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
++
++export async function retryWithBackoff<T>(
++  fn: () => Promise<T>,
++  opts?: RetryOptions
++): Promise<T> {
++  const maxRetries = opts?.maxRetries ?? 4;
++  const baseDelay = opts?.baseDelay ?? 1000;
++  const maxDelay = opts?.maxDelay ?? 30000;
++  const retryableCodes = opts?.retryableStatusCodes ?? DEFAULT_RETRYABLE_STATUS_CODES;
++  const hint = opts?.hint ?? "";
++
++  let lastError: unknown;
++  for (let attempt = 0; attempt <= maxRetries; attempt++) {
++    try {
++      if (attempt > 0) {
++        console.warn(
++          `${hint}: retry attempt ${attempt}/${maxRetries} at ${Date.now()}`
++        );
++      }
++      return await fn();
++    } catch (e: unknown) {
++      lastError = e;
++      const status = (e as any)?.status ?? (e as any)?.statusCode ?? (e as any)?.response?.status;
++      if (status === undefined || !retryableCodes.includes(status)) {
++        throw e;
++      }
++      if (attempt === maxRetries) {
++        console.error(
++          `${hint}: all ${maxRetries} retries exhausted for status ${status}`
++        );
++        throw e;
++      }
++      const retryAfter = (e as any)?.headers?.["retry-after"]
++        ? parseInt((e as any).headers["retry-after"], 10)
++        : undefined;
++      const fallback = baseDelay * Math.pow(2, attempt);
++      const minDelay = Math.max(retryAfter ? retryAfter * 1000 : 0, fallback);
++      const jitter = Math.random() * minDelay * 0.8;
++      const waitMs = Math.min(minDelay + jitter, maxDelay);
++      console.warn(
++        `${hint}: got ${status}, waiting ${Math.round(waitMs)}ms before retry`
++      );
++      await delay(waitMs);
++    }
++  }
++  throw lastError;
++}
++
+ /**
+  * https://forum.obsidian.md/t/css-to-show-status-bar-on-mobile-devices/77185
+  * @param op
+@@ -747,22 +807,30 @@ export const getSha1 = async (x: ArrayBuffer, stringify: "base64" | "hex") => {
+  * https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions
+  * https://support.microsoft.com/en-us/office/restrictions-and-limitations-in-onedrive-and-sharepoint-64883a5d-228e-48f5-b3d2-eb39e07630fa#invalidcharacters
+  */
+-export const checkValidName = (x: string) => {
++export const checkValidName = (
++  x: string,
++  platform: "windows" | "other" | "warn" = "warn"
++): { reason: string; result: boolean; level: "error" | "warn" } => {
+   if (x === undefined || x === "") {
+-    // what??
+-    return {
+-      reason: "empty",
+-      result: false,
+-    };
++    return { reason: "empty", result: false, level: "error" };
+   }
+ 
++  // Null bytes are invalid everywhere
++  if (x.includes("\0")) {
++    return { reason: "contains null byte", result: false, level: "error" };
++  }
++
++  const isWindowsStrict = platform === "windows";
++  const level: "error" | "warn" = isWindowsStrict ? "error" : "warn";
++
+   // The following reserved characters:
+   const invalidChars = '*"<>:|?'.split("");
+   for (const c of invalidChars) {
+     if (x.includes(c)) {
+       return {
+         reason: `reserved character: ${c}`,
+-        result: false,
++        result: !isWindowsStrict,
++        level,
+       };
+     }
+   }
+@@ -778,6 +846,7 @@ export const checkValidName = (x: string) => {
+       return {
+         reason: `directory being ${c}`,
+         result: false,
++        level: "error",
+       };
+     }
+   }
+@@ -826,7 +895,8 @@ export const checkValidName = (x: string) => {
+     ) {
+       return {
+         reason: `reserved folder/file name: ${f}`,
+-        result: false,
++        result: !isWindowsStrict,
++        level,
+       };
+     }
+   }
+@@ -840,12 +910,10 @@ export const checkValidName = (x: string) => {
+   ) {
+     return {
+       reason: `folder/file name ending with a space or a period`,
+-      result: false,
++      result: !isWindowsStrict,
++      level,
+     };
+   }
+ 
+-  return {
+-    reason: "ok",
+-    result: true,
+-  };
++  return { reason: "ok", result: true, level: "warn" };
+ };

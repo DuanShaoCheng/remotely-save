@@ -219,3 +219,29 @@ Download history can be viewed on the unofficial [Obsidian Stats](https://www.mo
 (NOT affiliated with official Obsidian and GitHub and Remotely Save.)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=remotely-save/remotely-save&type=Date)](https://star-history.com/#remotely-save/remotely-save&Date)
+
+## Fork Fixes (v0.5.25-fix.3)
+
+This fork includes the following stability improvements on top of the original v0.5.25:
+
+1. **Retry with backoff** — HTTP 429/500/502/503/504 errors in WebDAV, S3, and OneDrive backends are now automatically retried with exponential backoff and jitter.
+2. **Minimum sync interval** — A 30-second minimum interval prevents rapid re-sync loops triggered by sync-on-save.
+3. **Filename validation** — Cross-platform filename validation is re-enabled in warn mode; Windows-strict errors still block sync.
+4. **Encryption re-upload fix** — `fullfillMTimeOfRemoteEntityInplace` now correctly propagates mtime after upload, preventing unnecessary re-uploads of encrypted files.
+5. **Sync-on-save scope** — File change events are accumulated and filtered to skip config directory changes when not syncing config.
+6. **ArrayBuffer compatibility** — `bufferToArrayBuffer` creates a fresh ArrayBuffer to avoid SharedArrayBuffer type issues.
+7. **Credential leak protection** — `plugins/remotely-save/data.json` is always skipped during sync to prevent leaking credentials.
+
+### Important: Build Note
+
+**This fork must be built from the [original upstream repository](https://github.com/remotely-save/remotely-save) source code**, not from the fork's own `npm install`. Forking and running `npm install` may resolve to different dependency versions, producing a different bundle that breaks OAuth authentication (causing `ERR_HTTP2_PROTOCOL_ERROR`).
+
+Correct build steps:
+```bash
+git clone https://github.com/remotely-save/remotely-save.git
+cd remotely-save
+git apply fixes.patch   # apply fork's source changes
+npm install
+npm run build           # use webpack, NOT esbuild
+```
+
