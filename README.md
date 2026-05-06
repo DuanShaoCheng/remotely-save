@@ -232,12 +232,6 @@ This fork includes the following stability improvements on top of the original v
 6. **ArrayBuffer compatibility** — `bufferToArrayBuffer` creates a fresh ArrayBuffer to avoid SharedArrayBuffer type issues.
 7. **Credential leak protection** — `plugins/remotely-save/data.json` is always skipped during sync to prevent leaking credentials.
 
-### Important: Build Note
-
-**This fork must be built from the [original upstream repository](https://github.com/remotely-save/remotely-save) source code**, not from the fork's own `npm install`. Forking and running `npm install` may resolve to different dependency versions, producing a different bundle that breaks OAuth authentication (causing `ERR_HTTP2_PROTOCOL_ERROR`).
-
-Correct build steps:
-```bash
 git clone https://github.com/remotely-save/remotely-save.git
 cd remotely-save
 git apply fixes.patch   # apply fork's source changes
@@ -245,3 +239,10 @@ npm install
 npm run build           # use webpack, NOT esbuild
 ```
 
+
+### Build
+
+```bash
+npm install
+npm run build
+```
