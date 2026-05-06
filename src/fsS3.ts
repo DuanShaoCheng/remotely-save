@@ -29,7 +29,7 @@ import { Platform, type RequestUrlParam, requestUrl } from "obsidian";
 import PQueue from "p-queue";
 import { DEFAULT_CONTENT_TYPE, type S3Config } from "./baseTypes";
 import { VALID_REQURL } from "./baseTypesObs";
-import { bufferToArrayBuffer, getFolderLevels } from "./misc";
+import { bufferToArrayBuffer, getFolderLevels, retryWithBackoff } from "./misc";
 
 import type { Entity } from "./baseTypes";
 import { FakeFs } from "./fsAll";
@@ -587,19 +587,21 @@ export class FakeFsS3 extends FakeFs {
     ) {
       throw Error(`_statFromRoot should only accept prefix-ed path`);
     }
-    const res = await this.s3Client.send(
-      new HeadObjectCommand({
-        Bucket: this.s3Config.s3BucketName,
-        Key: key,
-      })
-    );
+    return await retryWithBackoff(async () => {
+      const res = await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.s3Config.s3BucketName,
+          Key: key,
+        })
+      );
 
-    return fromS3HeadObjectToEntity(
-      key,
-      res,
-      this.s3Config.remotePrefix ?? "",
-      this.s3Config.useAccurateMTime ?? false
-    );
+      return fromS3HeadObjectToEntity(
+        key,
+        res,
+        this.s3Config.remotePrefix ?? "",
+        this.s3Config.useAccurateMTime ?? false
+      );
+    }, { hint: `s3: stat ${key}` });
   }
 
   async mkdir(key: string, mtime?: number, ctime?: number): Promise<Entity> {
@@ -698,36 +700,38 @@ export class FakeFsS3 extends FakeFs {
       throw Error(`_writeFileFromRoot should only accept prefix-ed path`);
     }
 
-    const bytesIn5MB = 5242880;
-    const body = new Uint8Array(content);
+    return await retryWithBackoff(async () => {
+      const bytesIn5MB = 5242880;
+      const body = new Uint8Array(content);
 
-    let contentType = DEFAULT_CONTENT_TYPE;
-    contentType =
-      mime.contentType(mime.lookup(key) || DEFAULT_CONTENT_TYPE) ||
-      DEFAULT_CONTENT_TYPE;
+      let contentType = DEFAULT_CONTENT_TYPE;
+      contentType =
+        mime.contentType(mime.lookup(key) || DEFAULT_CONTENT_TYPE) ||
+        DEFAULT_CONTENT_TYPE;
 
-    const upload = new Upload({
-      client: this.s3Client,
-      queueSize: this.s3Config.partsConcurrency, // concurrency
-      partSize: bytesIn5MB, // minimal 5MB by default
-      leavePartsOnError: false,
-      params: {
-        Bucket: this.s3Config.s3BucketName,
-        Key: key,
-        Body: body,
-        ContentType: contentType,
-        Metadata: {
-          MTime: `${mtime / 1000.0}`,
-          CTime: `${ctime / 1000.0}`,
+      const upload = new Upload({
+        client: this.s3Client,
+        queueSize: this.s3Config.partsConcurrency, // concurrency
+        partSize: bytesIn5MB, // minimal 5MB by default
+        leavePartsOnError: false,
+        params: {
+          Bucket: this.s3Config.s3BucketName,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+          Metadata: {
+            MTime: `${mtime / 1000.0}`,
+            CTime: `${ctime / 1000.0}`,
+          },
         },
-      },
-    });
-    upload.on("httpUploadProgress", (progress) => {
-      // console.info(progress);
-    });
-    await upload.done();
+      });
+      upload.on("httpUploadProgress", (progress) => {
+        // console.info(progress);
+      });
+      await upload.done();
 
-    return await this._statFromRoot(key);
+      return await this._statFromRoot(key);
+    }, { hint: `s3: write ${key}` });
   }
 
   async readFile(key: string): Promise<ArrayBuffer> {
@@ -750,14 +754,16 @@ export class FakeFsS3 extends FakeFs {
     ) {
       throw Error(`_readFileFromRoot should only accept prefix-ed path`);
     }
-    const data = await this.s3Client.send(
-      new GetObjectCommand({
-        Bucket: this.s3Config.s3BucketName,
-        Key: key,
-      })
-    );
-    const bodyContents = await getObjectBodyToArrayBuffer(data.Body);
-    return bodyContents;
+    return await retryWithBackoff(async () => {
+      const data = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: this.s3Config.s3BucketName,
+          Key: key,
+        })
+      );
+      const bodyContents = await getObjectBodyToArrayBuffer(data.Body);
+      return bodyContents;
+    }, { hint: `s3: read ${key}` });
   }
 
   async rename(key1: string, key2: string): Promise<void> {

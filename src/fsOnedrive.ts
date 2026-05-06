@@ -19,7 +19,7 @@ import {
 } from "./baseTypes";
 import { VALID_REQURL } from "./baseTypesObs";
 import { FakeFs } from "./fsAll";
-import { bufferToArrayBuffer } from "./misc";
+import { bufferToArrayBuffer, retryWithBackoff } from "./misc";
 
 const SCOPES = ["User.Read", "Files.ReadWrite.AppFolder", "offline_access"];
 const REDIRECT_URI = `obsidian://${COMMAND_CALLBACK_ONEDRIVE}`;
@@ -619,104 +619,114 @@ export class FakeFsOnedrive extends FakeFs {
   }
 
   async _getJson(pathFragOrig: string) {
-    const theUrl = this._buildUrl(pathFragOrig);
-    console.debug(`getJson, theUrl=${theUrl}`);
-    return JSON.parse(
-      await request({
-        url: theUrl,
-        method: "GET",
-        contentType: "application/json",
-        headers: {
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-          "Cache-Control": "no-cache",
-        },
-      })
-    );
+    return await retryWithBackoff(async () => {
+      const theUrl = this._buildUrl(pathFragOrig);
+      console.debug(`getJson, theUrl=${theUrl}`);
+      return JSON.parse(
+        await request({
+          url: theUrl,
+          method: "GET",
+          contentType: "application/json",
+          headers: {
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+            "Cache-Control": "no-cache",
+          },
+        })
+      );
+    }, { hint: `onedrive: get ${pathFragOrig}` });
   }
 
   async _postJson(pathFragOrig: string, payload: any) {
-    const theUrl = this._buildUrl(pathFragOrig);
-    console.debug(`postJson, theUrl=${theUrl}`);
-    return JSON.parse(
-      await request({
-        url: theUrl,
-        method: "POST",
-        contentType: "application/json",
-        body: JSON.stringify(payload),
-        headers: {
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      })
-    );
+    return await retryWithBackoff(async () => {
+      const theUrl = this._buildUrl(pathFragOrig);
+      console.debug(`postJson, theUrl=${theUrl}`);
+      return JSON.parse(
+        await request({
+          url: theUrl,
+          method: "POST",
+          contentType: "application/json",
+          body: JSON.stringify(payload),
+          headers: {
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        })
+      );
+    }, { hint: `onedrive: post ${pathFragOrig}` });
   }
 
   async _patchJson(pathFragOrig: string, payload: any) {
-    const theUrl = this._buildUrl(pathFragOrig);
-    console.debug(`patchJson, theUrl=${theUrl}`);
-    return JSON.parse(
-      await request({
-        url: theUrl,
-        method: "PATCH",
-        contentType: "application/json",
-        body: JSON.stringify(payload),
-        headers: {
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      })
-    );
+    return await retryWithBackoff(async () => {
+      const theUrl = this._buildUrl(pathFragOrig);
+      console.debug(`patchJson, theUrl=${theUrl}`);
+      return JSON.parse(
+        await request({
+          url: theUrl,
+          method: "PATCH",
+          contentType: "application/json",
+          body: JSON.stringify(payload),
+          headers: {
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        })
+      );
+    }, { hint: `onedrive: patch ${pathFragOrig}` });
   }
 
   async _deleteJson(pathFragOrig: string) {
-    const theUrl = this._buildUrl(pathFragOrig);
-    console.debug(`deleteJson, theUrl=${theUrl}`);
-    if (VALID_REQURL) {
-      await requestUrl({
-        url: theUrl,
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      });
-    } else {
-      await fetch(theUrl, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      });
-    }
+    await retryWithBackoff(async () => {
+      const theUrl = this._buildUrl(pathFragOrig);
+      console.debug(`deleteJson, theUrl=${theUrl}`);
+      if (VALID_REQURL) {
+        await requestUrl({
+          url: theUrl,
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        });
+      } else {
+        await fetch(theUrl, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        });
+      }
+    }, { hint: `onedrive: delete ${pathFragOrig}` });
   }
 
   async _putArrayBuffer(pathFragOrig: string, payload: ArrayBuffer) {
-    const theUrl = this._buildUrl(pathFragOrig);
-    console.debug(`putArrayBuffer, theUrl=${theUrl}`);
-    // TODO:
-    // 20220401: On Android, requestUrl has issue that text becomes base64.
-    // Use fetch everywhere instead!
-    // biome-ignore lint/correctness/noConstantCondition: hard code
-    if (false /*VALID_REQURL*/) {
-      const res = await requestUrl({
-        url: theUrl,
-        method: "PUT",
-        body: payload,
-        contentType: DEFAULT_CONTENT_TYPE,
-        headers: {
-          "Content-Type": DEFAULT_CONTENT_TYPE,
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      });
-      return res.json as DriveItem | UploadSession;
-    } else {
-      const res = await fetch(theUrl, {
-        method: "PUT",
-        body: payload,
-        headers: {
-          "Content-Type": DEFAULT_CONTENT_TYPE,
-          Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
-        },
-      });
-      return (await res.json()) as DriveItem | UploadSession;
-    }
+    return await retryWithBackoff(async () => {
+      const theUrl = this._buildUrl(pathFragOrig);
+      console.debug(`putArrayBuffer, theUrl=${theUrl}`);
+      // TODO:
+      // 20220401: On Android, requestUrl has issue that text becomes base64.
+      // Use fetch everywhere instead!
+      // biome-ignore lint/correctness/noConstantCondition: hard code
+      if (false /*VALID_REQURL*/) {
+        const res = await requestUrl({
+          url: theUrl,
+          method: "PUT",
+          body: payload,
+          contentType: DEFAULT_CONTENT_TYPE,
+          headers: {
+            "Content-Type": DEFAULT_CONTENT_TYPE,
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        });
+        return res.json as DriveItem | UploadSession;
+      } else {
+        const res = await fetch(theUrl, {
+          method: "PUT",
+          body: payload,
+          headers: {
+            "Content-Type": DEFAULT_CONTENT_TYPE,
+            Authorization: `Bearer ${await this.authGetter.getAccessToken()}`,
+          },
+        });
+        return (await res.json()) as DriveItem | UploadSession;
+      }
+    }, { hint: `onedrive: put ${pathFragOrig}` });
   }
 
   /**

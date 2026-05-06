@@ -89,8 +89,11 @@ export const mkdirpInVault = async (thePath: string, vault: Vault) => {
  */
 export const bufferToArrayBuffer = (
   b: Buffer | Uint8Array | ArrayBufferView
-) => {
-  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+): ArrayBuffer => {
+  const ab = new ArrayBuffer(b.byteLength);
+  const view = new Uint8Array(ab);
+  view.set(new Uint8Array(b.buffer, b.byteOffset, b.byteLength));
+  return ab;
 };
 
 /**
@@ -533,6 +536,63 @@ export const stringToFragment = (string: string) => {
 export const delay = (ms: number) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+export interface RetryOptions {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  retryableStatusCodes?: number[];
+  hint?: string;
+}
+
+const DEFAULT_RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+
+export async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  opts?: RetryOptions
+): Promise<T> {
+  const maxRetries = opts?.maxRetries ?? 4;
+  const baseDelay = opts?.baseDelay ?? 1000;
+  const maxDelay = opts?.maxDelay ?? 30000;
+  const retryableCodes = opts?.retryableStatusCodes ?? DEFAULT_RETRYABLE_STATUS_CODES;
+  const hint = opts?.hint ?? "";
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.warn(
+          `${hint}: retry attempt ${attempt}/${maxRetries} at ${Date.now()}`
+        );
+      }
+      return await fn();
+    } catch (e: unknown) {
+      lastError = e;
+      const status = (e as any)?.status ?? (e as any)?.statusCode ?? (e as any)?.response?.status;
+      if (status === undefined || !retryableCodes.includes(status)) {
+        throw e;
+      }
+      if (attempt === maxRetries) {
+        console.error(
+          `${hint}: all ${maxRetries} retries exhausted for status ${status}`
+        );
+        throw e;
+      }
+      const retryAfter = (e as any)?.headers?.["retry-after"]
+        ? parseInt((e as any).headers["retry-after"], 10)
+        : undefined;
+      const fallback = baseDelay * Math.pow(2, attempt);
+      const minDelay = Math.max(retryAfter ? retryAfter * 1000 : 0, fallback);
+      const jitter = Math.random() * minDelay * 0.8;
+      const waitMs = Math.min(minDelay + jitter, maxDelay);
+      console.warn(
+        `${hint}: got ${status}, waiting ${Math.round(waitMs)}ms before retry`
+      );
+      await delay(waitMs);
+    }
+  }
+  throw lastError;
+}
+
 /**
  * https://forum.obsidian.md/t/css-to-show-status-bar-on-mobile-devices/77185
  * @param op
@@ -747,14 +807,21 @@ export const getSha1 = async (x: ArrayBuffer, stringify: "base64" | "hex") => {
  * https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file#naming-conventions
  * https://support.microsoft.com/en-us/office/restrictions-and-limitations-in-onedrive-and-sharepoint-64883a5d-228e-48f5-b3d2-eb39e07630fa#invalidcharacters
  */
-export const checkValidName = (x: string) => {
+export const checkValidName = (
+  x: string,
+  platform: "windows" | "other" | "warn" = "warn"
+): { reason: string; result: boolean; level: "error" | "warn" } => {
   if (x === undefined || x === "") {
-    // what??
-    return {
-      reason: "empty",
-      result: false,
-    };
+    return { reason: "empty", result: false, level: "error" };
   }
+
+  // Null bytes are invalid everywhere
+  if (x.includes("\0")) {
+    return { reason: "contains null byte", result: false, level: "error" };
+  }
+
+  const isWindowsStrict = platform === "windows";
+  const level: "error" | "warn" = isWindowsStrict ? "error" : "warn";
 
   // The following reserved characters:
   const invalidChars = '*"<>:|?'.split("");
@@ -762,7 +829,8 @@ export const checkValidName = (x: string) => {
     if (x.includes(c)) {
       return {
         reason: `reserved character: ${c}`,
-        result: false,
+        result: !isWindowsStrict,
+        level,
       };
     }
   }
@@ -778,6 +846,7 @@ export const checkValidName = (x: string) => {
       return {
         reason: `directory being ${c}`,
         result: false,
+        level: "error",
       };
     }
   }
@@ -826,7 +895,8 @@ export const checkValidName = (x: string) => {
     ) {
       return {
         reason: `reserved folder/file name: ${f}`,
-        result: false,
+        result: !isWindowsStrict,
+        level,
       };
     }
   }
@@ -840,12 +910,10 @@ export const checkValidName = (x: string) => {
   ) {
     return {
       reason: `folder/file name ending with a space or a period`,
-      result: false,
+      result: !isWindowsStrict,
+      level,
     };
   }
 
-  return {
-    reason: "ok",
-    result: true,
-  };
+  return { reason: "ok", result: true, level: "warn" };
 };

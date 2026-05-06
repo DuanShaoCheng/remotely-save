@@ -15,7 +15,7 @@ import type {
 import type { Entity, WebdavConfig } from "./baseTypes";
 import { VALID_REQURL } from "./baseTypesObs";
 import { FakeFs } from "./fsAll";
-import { bufferToArrayBuffer, delay, splitFileSizeToChunkRanges } from "./misc";
+import { bufferToArrayBuffer, delay, retryWithBackoff, splitFileSizeToChunkRanges } from "./misc";
 
 /**
  * https://stackoverflow.com/questions/32850898/how-to-check-if-a-string-has-any-non-iso-8859-1-characters-with-javascript
@@ -539,10 +539,12 @@ export class FakeFsWebdav extends FakeFs {
   }
 
   async _statFromRoot(key: string): Promise<Entity> {
-    const res = (await this.client.stat(key, {
-      details: false,
-    })) as FileStat;
-    return fromWebdavItemToEntity(res, this.remoteBaseDir);
+    return await retryWithBackoff(async () => {
+      const res = (await this.client.stat(key, {
+        details: false,
+      })) as FileStat;
+      return fromWebdavItemToEntity(res, this.remoteBaseDir);
+    }, { hint: `webdav: stat ${key}` });
   }
 
   async mkdir(key: string, mtime?: number, ctime?: number): Promise<Entity> {
@@ -674,16 +676,16 @@ export class FakeFsWebdav extends FakeFs {
     ctime: number,
     origKey: string
   ): Promise<Entity> {
-    // console.debug(`start _writeFileFromRootFull`);
-    await this.client.putFileContents(key, content, {
-      overwrite: true,
-      onUploadProgress: (progress: any) => {
-        console.info(`Uploaded ${progress.loaded} bytes of ${progress.total}`);
-      },
-    });
-    const k = await this._statFromRoot(key);
-    // console.debug(`end _writeFileFromRootFull`);
-    return k;
+    return await retryWithBackoff(async () => {
+      await this.client.putFileContents(key, content, {
+        overwrite: true,
+        onUploadProgress: (progress: any) => {
+          console.info(`Uploaded ${progress.loaded} bytes of ${progress.total}`);
+        },
+      });
+      const k = await this._statFromRoot(key);
+      return k;
+    }, { hint: `webdav: write ${key}` });
   }
 
   /**
@@ -890,13 +892,15 @@ export class FakeFsWebdav extends FakeFs {
   }
 
   async _readFileFromRoot(key: string): Promise<ArrayBuffer> {
-    const buff = (await this.client.getFileContents(key)) as BufferLike;
-    if (buff instanceof ArrayBuffer) {
-      return buff;
-    } else if (buff instanceof Buffer) {
-      return bufferToArrayBuffer(buff);
-    }
-    throw Error(`unexpected file content result with type ${typeof buff}`);
+    return await retryWithBackoff(async () => {
+      const buff = (await this.client.getFileContents(key)) as BufferLike;
+      if (buff instanceof ArrayBuffer) {
+        return buff;
+      } else if (buff instanceof Buffer) {
+        return bufferToArrayBuffer(buff);
+      }
+      throw Error(`unexpected file content result with type ${typeof buff}`);
+    }, { hint: `webdav: read ${key}` });
   }
 
   async rename(key1: string, key2: string): Promise<void> {

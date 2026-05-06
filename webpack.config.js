@@ -95,6 +95,9 @@ module.exports = {
   resolve: {
     extensions: [".tsx", ".ts", ".js"],
     mainFields: ["browser", "module", "main"],
+    alias: {
+      "node:url": "url",
+    },
     fallback: {
       // assert: require.resolve("assert"),
       // buffer: require.resolve("buffer/"),

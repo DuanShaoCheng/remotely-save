@@ -11,6 +11,7 @@ import {
   Platform,
   Plugin,
   type Setting,
+  TFile,
   TFolder,
   addIcon,
   requireApiVersion,
@@ -230,6 +231,8 @@ export default class RemotelySavePlugin extends Plugin {
   debugServerTemp?: string;
   syncEvent?: Events;
   appContainerObserver?: MutationObserver;
+  lastSyncCompletedAt: number = 0;
+  recentlyChangedFiles: Set<string> = new Set();
 
   async syncRun(triggerSource: SyncTriggerSourceType = "manual") {
     let profiler: Profiler | undefined = undefined;
@@ -510,6 +513,7 @@ export default class RemotelySavePlugin extends Plugin {
     fsEncrypt.closeResources();
     (profiler as Profiler | undefined)?.clear();
 
+    this.lastSyncCompletedAt = Date.now();
     this.syncEvent?.trigger("SYNC_DONE");
   }
 
@@ -1786,6 +1790,15 @@ export default class RemotelySavePlugin extends Plugin {
 
   async _checkCurrFileModified(caller: "SYNC" | "FILE_CHANGES") {
     console.debug(`inside checkCurrFileModified`);
+
+    // Minimum interval between auto-syncs to prevent rapid re-sync loops
+    const MIN_SYNC_INTERVAL_MS = 30000; // 30 seconds
+    const now = Date.now();
+    if (caller === "FILE_CHANGES" && now - this.lastSyncCompletedAt < MIN_SYNC_INTERVAL_MS) {
+      console.debug(`skipping auto sync, too soon after last sync (${now - this.lastSyncCompletedAt}ms < ${MIN_SYNC_INTERVAL_MS}ms)`);
+      return;
+    }
+
     const currentFile = this.app.workspace.getActiveFile();
 
     if (currentFile) {
@@ -1835,11 +1848,28 @@ export default class RemotelySavePlugin extends Plugin {
     this._checkCurrFileModified("SYNC");
   };
 
+  _syncOnSaveEvent2Accumulator = (file: any) => {
+    if (file instanceof TFile) {
+      // Skip config dir changes when not syncing config
+      if (
+        file.path.startsWith(this.app.vault.configDir + "/") &&
+        !this.settings.syncConfigDir &&
+        !this.settings.syncBookmarks
+      ) {
+        return;
+      }
+      this.recentlyChangedFiles.add(file.path);
+    }
+  };
+
   _syncOnSaveEvent2 = throttle(
     async () => {
-      await this._checkCurrFileModified("FILE_CHANGES");
+      if (this.recentlyChangedFiles.size > 0) {
+        this.recentlyChangedFiles.clear();
+        await this._checkCurrFileModified("FILE_CHANGES");
+      }
     },
-    1000 * 3,
+    1000 * 5,
     {
       leading: false,
       trailing: true,
@@ -1858,9 +1888,13 @@ export default class RemotelySavePlugin extends Plugin {
           this.syncEvent?.on("SYNC_DONE", this._syncOnSaveEvent1)!
         );
 
-        // listen to current file save changes
+        // listen to current file save changes via accumulator
+        this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2Accumulator));
+        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2Accumulator));
+        this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2Accumulator));
+        this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2Accumulator));
+        // The throttled handler checks accumulated files
         this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2));
-        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2));
         this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2));
         this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2));
       });

@@ -57,7 +57,7 @@ esbuild
     inject: ["./esbuild.injecthelper.mjs"],
     format: "cjs",
     // watch: !prod, // no longer valid in esbuild 0.17
-    target: "es2016",
+    target: "es2020",
     logLevel: "info",
     sourcemap: prod ? false : "inline",
     treeShaking: true,
@@ -89,6 +89,9 @@ esbuild
       // make azure blob storage happy
       // https://github.com/Azure/azure-sdk-for-js/blob/main/sdk/core/core-util/src/checkEnvironment.ts
       "globalThis.process.versions": `undefined`,
+    },
+    alias: {
+      "node:url": "url",
     },
     plugins: [inlineWorkerPlugin()],
   })

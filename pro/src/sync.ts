@@ -244,6 +244,17 @@ export const checkIsSkipItemOrNotByName = (
     }
   }
 
+  // Always skip the remotely-save plugin's own data.json to prevent credential leak
+  if (finalIsIgnored === undefined || !finalIsIgnored) {
+    if (
+      key.includes("plugins/remotely-save/data.json") ||
+      key === `${configDir}/plugins/remotely-save/data.json`
+    ) {
+      isExplictlyIgnored = true;
+      finalIsIgnored = true;
+    }
+  }
+
   const checkIsHidden =
     isHiddenPath(key, true, false) ||
     (!syncUnderscoreItems && isHiddenPath(key, false, true)) ||
@@ -405,14 +416,19 @@ const ensembleMixedEnties = async (
       remoteMaySkipCountAndNotConfig += 1;
     }
 
-    // 20240907: users (not on windows) doesn't like it. revert back now.
-    // TODO: platform specific but not introducing obsidian dependency into sync.ts
-    // const checkValidNameResult = checkValidName(key);
-    // if (!checkValidNameResult.result) {
-    //   throw Error(
-    //     `your remote folder/file name is invalid: ${checkValidNameResult.reason}`
-    //   );
-    // }
+    // Re-enabled with warn mode: warn on non-Windows, block on Windows
+    const checkValidNameResult = checkValidName(key, "warn");
+    if (!checkValidNameResult.result) {
+      if (checkValidNameResult.level === "error") {
+        throw Error(
+          `your remote folder/file name is invalid: ${checkValidNameResult.reason}`
+        );
+      } else {
+        console.warn(
+          `remote folder/file name may be invalid on Windows: ${key} (${checkValidNameResult.reason})`
+        );
+      }
+    }
 
     finalMappings[key] = {
       key: key,
@@ -490,14 +506,19 @@ const ensembleMixedEnties = async (
       skipOrNotResults[key] = skipOrNot;
     }
 
-    // 20240907: users (not on windows) doesn't like it. revert back now.
-    // TODO: platform specific but not introducing obsidian dependency into sync.ts
-    // const checkValidNameResult = checkValidName(key);
-    // if (!checkValidNameResult.result) {
-    //   throw Error(
-    //     `your local folder/file name is invalid: ${checkValidNameResult.reason}`
-    //   );
-    // }
+    // Re-enabled with warn mode: warn on non-Windows, block on Windows
+    const checkValidNameResult = checkValidName(key, "warn");
+    if (!checkValidNameResult.result) {
+      if (checkValidNameResult.level === "error") {
+        throw Error(
+          `your local folder/file name is invalid: ${checkValidNameResult.reason}`
+        );
+      } else {
+        console.warn(
+          `local folder/file name may be invalid on Windows: ${key} (${checkValidNameResult.reason})`
+        );
+      }
+    }
 
     // TODO: abstraction leaking?
     const localCopied = await fsEncrypt.encryptEntity(
@@ -1380,20 +1401,10 @@ const fullfillMTimeOfRemoteEntityInplace = (
   remote: Entity,
   mtimeCli?: number
 ) => {
-  // TODO:
-  // on 20240405, we find that dropbox's mtimeCli is not updated
-  // if the content is not updated even the time is updated...
-  // so we do not check remote.mtimeCli for now..
-  if (
-    mtimeCli !== undefined &&
-    mtimeCli > 0 /* &&
-    (remote.mtimeCli === undefined ||
-      remote.mtimeCli <= 0 ||
-      (remote.mtimeSvr !== undefined &&
-        remote.mtimeSvr > 0 &&
-        remote.mtimeCli >= remote.mtimeSvr))
-    */
-  ) {
+  // Always set mtimeCli from the local file after upload.
+  // This prevents re-upload on next sync when the remote mtimeCli
+  // doesn't match (e.g. Dropbox not updating mtimeCli on content-unchanged uploads).
+  if (mtimeCli !== undefined && mtimeCli > 0) {
     remote.mtimeCli = mtimeCli;
   }
   return remote;
@@ -1514,9 +1525,11 @@ const dispatchOperationToActualV3 = async (
       fsLocal,
       fsEncrypt
     );
-    // TODO: abstract away the dirty hack
     fullfillMTimeOfRemoteEntityInplace(entity, mtimeCli);
-    // console.debug(`after fullfill, entity=${JSON.stringify(entity,null,2)}`)
+    // Ensure sizeEnc is set to prevent re-upload on next sync
+    if (entity.sizeEnc === undefined && entity.size !== undefined) {
+      entity.sizeEnc = entity.size;
+    }
     await upsertPrevSyncRecordByVaultAndProfile(
       db,
       vaultRandomID,
