@@ -109,6 +109,11 @@ import {
   upsertPluginVersionByVault,
 } from "./localdb";
 import { changeMobileStatusBar } from "./misc";
+import {
+  SYNC_ON_SAVE_COOLDOWN_MS,
+  SYNC_ON_SAVE_THROTTLE_MS,
+  getRemainingSyncOnSaveCooldownMs,
+} from "./syncOnSave";
 import { DEFAULT_PROFILER_CONFIG, Profiler } from "./profiler";
 import { RemotelySaveSettingTab } from "./settings";
 import { SyncAlgoV3Modal } from "./syncAlgoV3Notice";
@@ -1323,6 +1328,10 @@ export default class RemotelySavePlugin extends Plugin {
   async onunload() {
     console.info(`unloading plugin ${this.manifest.id}`);
     this.syncRibbon = undefined;
+    if (this.syncOnSaveIntervalID !== undefined) {
+      window.clearTimeout(this.syncOnSaveIntervalID);
+      this.syncOnSaveIntervalID = undefined;
+    }
     if (this.appContainerObserver !== undefined) {
       this.appContainerObserver.disconnect();
       this.appContainerObserver = undefined;
@@ -1791,11 +1800,23 @@ export default class RemotelySavePlugin extends Plugin {
   async _checkCurrFileModified(caller: "SYNC" | "FILE_CHANGES") {
     console.debug(`inside checkCurrFileModified`);
 
-    // Minimum interval between auto-syncs to prevent rapid re-sync loops
-    const MIN_SYNC_INTERVAL_MS = 30000; // 30 seconds
     const now = Date.now();
-    if (caller === "FILE_CHANGES" && now - this.lastSyncCompletedAt < MIN_SYNC_INTERVAL_MS) {
-      console.debug(`skipping auto sync, too soon after last sync (${now - this.lastSyncCompletedAt}ms < ${MIN_SYNC_INTERVAL_MS}ms)`);
+    const remainingCooldownMs = getRemainingSyncOnSaveCooldownMs(
+      this.lastSyncCompletedAt,
+      now,
+      SYNC_ON_SAVE_COOLDOWN_MS
+    );
+    if (caller === "FILE_CHANGES" && remainingCooldownMs > 0) {
+      console.debug(
+        `deferring auto sync, still in cooldown (${remainingCooldownMs}ms left)`
+      );
+      if (this.syncOnSaveIntervalID !== undefined) {
+        window.clearTimeout(this.syncOnSaveIntervalID);
+      }
+      this.syncOnSaveIntervalID = window.setTimeout(() => {
+        this.syncOnSaveIntervalID = undefined;
+        void this._checkCurrFileModified("FILE_CHANGES");
+      }, remainingCooldownMs);
       return;
     }
 
@@ -1869,7 +1890,7 @@ export default class RemotelySavePlugin extends Plugin {
         await this._checkCurrFileModified("FILE_CHANGES");
       }
     },
-    1000 * 5,
+    SYNC_ON_SAVE_THROTTLE_MS,
     {
       leading: false,
       trailing: true,
@@ -1889,17 +1910,34 @@ export default class RemotelySavePlugin extends Plugin {
         );
 
         // listen to current file save changes via accumulator
-        this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2Accumulator));
-        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2Accumulator));
-        this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2Accumulator));
-        this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2Accumulator));
+        this.registerEvent(
+          this.app.vault.on("modify", this._syncOnSaveEvent2Accumulator)
+        );
+        this.registerEvent(
+          this.app.vault.on("create", this._syncOnSaveEvent2Accumulator)
+        );
+        this.registerEvent(
+          this.app.vault.on("delete", this._syncOnSaveEvent2Accumulator)
+        );
+        this.registerEvent(
+          this.app.vault.on("rename", this._syncOnSaveEvent2Accumulator)
+        );
         // The throttled handler checks accumulated files
         this.registerEvent(this.app.vault.on("modify", this._syncOnSaveEvent2));
+        this.registerEvent(this.app.vault.on("create", this._syncOnSaveEvent2));
         this.registerEvent(this.app.vault.on("delete", this._syncOnSaveEvent2));
         this.registerEvent(this.app.vault.on("rename", this._syncOnSaveEvent2));
       });
     } else {
       this.syncEvent?.off("SYNC_DONE", this._syncOnSaveEvent1);
+      if (this.syncOnSaveIntervalID !== undefined) {
+        window.clearTimeout(this.syncOnSaveIntervalID);
+        this.syncOnSaveIntervalID = undefined;
+      }
+      this.app.vault.off("modify", this._syncOnSaveEvent2Accumulator);
+      this.app.vault.off("create", this._syncOnSaveEvent2Accumulator);
+      this.app.vault.off("delete", this._syncOnSaveEvent2Accumulator);
+      this.app.vault.off("rename", this._syncOnSaveEvent2Accumulator);
       this.app.vault.off("modify", this._syncOnSaveEvent2);
       this.app.vault.off("create", this._syncOnSaveEvent2);
       this.app.vault.off("delete", this._syncOnSaveEvent2);

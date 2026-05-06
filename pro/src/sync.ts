@@ -45,6 +45,9 @@ import {
   upsertFileContentHistoryByVaultAndProfile,
 } from "./localdb";
 
+const isWindowsPlatform = () =>
+  typeof process !== "undefined" && process.platform === "win32";
+
 const copyEntityAndFixTimeFormat = (
   src: Entity,
   serviceType: SUPPORTED_SERVICES_TYPE
@@ -416,8 +419,11 @@ const ensembleMixedEnties = async (
       remoteMaySkipCountAndNotConfig += 1;
     }
 
-    // Re-enabled with warn mode: warn on non-Windows, block on Windows
-    const checkValidNameResult = checkValidName(key, "warn");
+    // Warn on non-Windows, block on Windows.
+    const checkValidNameResult = checkValidName(
+      key,
+      isWindowsPlatform() ? "windows" : "warn"
+    );
     if (!checkValidNameResult.result) {
       if (checkValidNameResult.level === "error") {
         throw Error(
@@ -506,8 +512,11 @@ const ensembleMixedEnties = async (
       skipOrNotResults[key] = skipOrNot;
     }
 
-    // Re-enabled with warn mode: warn on non-Windows, block on Windows
-    const checkValidNameResult = checkValidName(key, "warn");
+    // Warn on non-Windows, block on Windows.
+    const checkValidNameResult = checkValidName(
+      key,
+      isWindowsPlatform() ? "windows" : "warn"
+    );
     if (!checkValidNameResult.result) {
       if (checkValidNameResult.level === "error") {
         throw Error(
