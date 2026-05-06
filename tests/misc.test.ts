@@ -374,68 +374,68 @@ describe("Misc: check valid file names", () => {
 
   it("should be not ok for reserved characters", () => {
     let item = "a**";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "a?*";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "<>:";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "<>:/ssss";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
   });
 
   it("should be not ok for reserved names", () => {
     let item = "CON";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "CON.txt";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "CON.md";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "con"; // lower case is ok
     assert.ok(misc.checkValidName(item).result);
 
     item = "CON/";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "CON.dir/";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "CON.dir.folder/";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx/CON";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx/CON.txt";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx/CON.txt.md";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
   });
 
   it("should be not ok for invalid endings", () => {
     let item = "xxx ";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "/xxx ";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx.yyy.";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx.yyy.";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx /";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
 
     item = "xxx.yyy./";
-    assert.ok(!misc.checkValidName(item).result);
+    assert.ok(!misc.checkValidName(item, "windows").result);
   });
 });
 

@@ -70,7 +70,7 @@ describe("Encryption OpenSSL tests", () => {
     // cat ./sometext.txt | openssl enc -p -aes-256-cbc -S 8302F586FAB491EC -pbkdf2 -iter 20000 -base64 -pass pass:somepassword
     // openssl enc -p -aes-256-cbc -S 8302F586FAB491EC -pbkdf2 -iter 20000 -base64 -pass pass:somepassword -in ./sometext.txt
     const opensslBase64Res =
-      "U2FsdGVkX1+DAvWG+rSR7BPXMnlvSSVGMdjsx7kE1CTH+28P+yAZRdDGgFWMGkMd";
+      "U2FsdGVkX1+DAvWG+rSR7BPXMnlvSSVGMdjsx7kE1CRjRiz8021lrXsRVUg1CXLQ";
     // we output base32, so we need some transformation
     const opensslBase64urlRes = base64ToBase64url(opensslBase64Res);
 
